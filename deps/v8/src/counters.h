@@ -486,21 +486,29 @@ double AggregatedMemoryHistogram<Histogram>::Aggregate(double current_ms,
 
 class RuntimeCallCounter final {
  public:
-  explicit RuntimeCallCounter(const char* name) : name_(name) {}
+  explicit RuntimeCallCounter(const char* name)
+      : name_(name), count_(0), time_(0) {}
   V8_NOINLINE void Reset();
   V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
   void Add(RuntimeCallCounter* other);
 
   const char* name() const { return name_; }
   int64_t count() const { return count_; }
-  base::TimeDelta time() const { return time_; }
+  base::TimeDelta time() const {
+    return base::TimeDelta::FromMicroseconds(time_);
+  }
   void Increment() { count_++; }
-  void Add(base::TimeDelta delta) { time_ += delta; }
+  void Add(base::TimeDelta delta) { time_ += delta.InMicroseconds(); }
 
  private:
+  RuntimeCallCounter() {}
+
   const char* name_;
-  int64_t count_ = 0;
-  base::TimeDelta time_;
+  int64_t count_;
+  // Stored as int64_t so that its initialization can be deferred.
+  int64_t time_;
+
+  friend class RuntimeCallStats;
 };
 
 // RuntimeCallTimer is used to keep track of the stack of currently active
@@ -546,7 +554,6 @@ class RuntimeCallTimer final {
   V(Date_New)                                              \
   V(Date_NumberValue)                                      \
   V(Debug_Call)                                            \
-  V(Debug_GetMirror)                                       \
   V(Error_New)                                             \
   V(External_New)                                          \
   V(Float32Array_New)                                      \
@@ -702,7 +709,7 @@ class RuntimeCallTimer final {
   V(CompileScopeAnalysis)                           \
   V(CompileScript)                                  \
   V(CompileSerialize)                               \
-  V(CompilerDispatcher)                             \
+  V(CompileWaitForDispatcher)                       \
   V(DeoptimizeCode)                                 \
   V(FunctionCallback)                               \
   V(GC)                                             \
@@ -755,7 +762,6 @@ class RuntimeCallTimer final {
   V(UnexpectedStubMiss)
 
 #define FOR_EACH_HANDLER_COUNTER(V)              \
-  V(IC_HandlerCacheHit)                          \
   V(KeyedLoadIC_LoadIndexedStringStub)           \
   V(KeyedLoadIC_LoadIndexedInterceptorStub)      \
   V(KeyedLoadIC_KeyedLoadSloppyArgumentsStub)    \
@@ -767,82 +773,63 @@ class RuntimeCallTimer final {
   V(KeyedStoreIC_StoreFastElementStub)           \
   V(KeyedStoreIC_StoreElementStub)               \
   V(LoadIC_FunctionPrototypeStub)                \
-  V(LoadIC_HandlerCacheHit_AccessCheck)          \
-  V(LoadIC_HandlerCacheHit_Exotic)               \
-  V(LoadIC_HandlerCacheHit_Interceptor)          \
-  V(LoadIC_HandlerCacheHit_JSProxy)              \
-  V(LoadIC_HandlerCacheHit_NonExistent)          \
   V(LoadIC_HandlerCacheHit_Accessor)             \
-  V(LoadIC_HandlerCacheHit_Data)                 \
-  V(LoadIC_HandlerCacheHit_Transition)           \
+  V(LoadIC_LoadAccessorDH)                       \
+  V(LoadIC_LoadAccessorFromPrototypeDH)          \
   V(LoadIC_LoadApiGetterDH)                      \
   V(LoadIC_LoadApiGetterFromPrototypeDH)         \
-  V(LoadIC_LoadApiGetterStub)                    \
   V(LoadIC_LoadCallback)                         \
   V(LoadIC_LoadConstantDH)                       \
   V(LoadIC_LoadConstantFromPrototypeDH)          \
-  V(LoadIC_LoadConstant)                         \
-  V(LoadIC_LoadConstantStub)                     \
   V(LoadIC_LoadFieldDH)                          \
   V(LoadIC_LoadFieldFromPrototypeDH)             \
-  V(LoadIC_LoadField)                            \
-  V(LoadIC_LoadGlobal)                           \
-  V(LoadIC_LoadInterceptor)                      \
+  V(LoadIC_LoadGlobalFromPrototypeDH)            \
+  V(LoadIC_LoadIntegerIndexedExoticDH)           \
+  V(LoadIC_LoadInterceptorDH)                    \
+  V(LoadIC_LoadNonMaskingInterceptorDH)          \
+  V(LoadIC_LoadInterceptorFromPrototypeDH)       \
   V(LoadIC_LoadNonexistentDH)                    \
-  V(LoadIC_LoadNonexistent)                      \
-  V(LoadIC_LoadNormal)                           \
+  V(LoadIC_LoadNormalDH)                         \
+  V(LoadIC_LoadNormalFromPrototypeDH)            \
   V(LoadIC_LoadScriptContextFieldStub)           \
   V(LoadIC_LoadViaGetter)                        \
   V(LoadIC_NonReceiver)                          \
   V(LoadIC_Premonomorphic)                       \
   V(LoadIC_SlowStub)                             \
   V(LoadIC_StringLengthStub)                     \
-  V(StoreIC_HandlerCacheHit_AccessCheck)         \
-  V(StoreIC_HandlerCacheHit_Exotic)              \
-  V(StoreIC_HandlerCacheHit_Interceptor)         \
-  V(StoreIC_HandlerCacheHit_JSProxy)             \
-  V(StoreIC_HandlerCacheHit_NonExistent)         \
   V(StoreIC_HandlerCacheHit_Accessor)            \
-  V(StoreIC_HandlerCacheHit_Data)                \
-  V(StoreIC_HandlerCacheHit_Transition)          \
   V(StoreIC_NonReceiver)                         \
   V(StoreIC_Premonomorphic)                      \
   V(StoreIC_SlowStub)                            \
   V(StoreIC_StoreCallback)                       \
-  V(StoreIC_StoreField)                          \
   V(StoreIC_StoreFieldDH)                        \
-  V(StoreIC_StoreFieldStub)                      \
-  V(StoreIC_StoreGlobal)                         \
-  V(StoreIC_StoreGlobalTransition)               \
+  V(StoreIC_StoreGlobalDH)                       \
+  V(StoreIC_StoreGlobalTransitionDH)             \
   V(StoreIC_StoreInterceptorStub)                \
-  V(StoreIC_StoreNormal)                         \
+  V(StoreIC_StoreNormalDH)                       \
   V(StoreIC_StoreScriptContextFieldStub)         \
-  V(StoreIC_StoreTransition)                     \
   V(StoreIC_StoreTransitionDH)                   \
   V(StoreIC_StoreViaSetter)
 
 class RuntimeCallStats final : public ZoneObject {
  public:
   typedef RuntimeCallCounter RuntimeCallStats::*CounterId;
+  V8_EXPORT_PRIVATE RuntimeCallStats();
 
-#define CALL_RUNTIME_COUNTER(name) \
-  RuntimeCallCounter name = RuntimeCallCounter(#name);
+#define CALL_RUNTIME_COUNTER(name) RuntimeCallCounter name;
   FOR_EACH_MANUAL_COUNTER(CALL_RUNTIME_COUNTER)
 #undef CALL_RUNTIME_COUNTER
 #define CALL_RUNTIME_COUNTER(name, nargs, ressize) \
-  RuntimeCallCounter Runtime_##name = RuntimeCallCounter(#name);
+  RuntimeCallCounter Runtime_##name;
   FOR_EACH_INTRINSIC(CALL_RUNTIME_COUNTER)
 #undef CALL_RUNTIME_COUNTER
-#define CALL_BUILTIN_COUNTER(name) \
-  RuntimeCallCounter Builtin_##name = RuntimeCallCounter(#name);
+#define CALL_BUILTIN_COUNTER(name) RuntimeCallCounter Builtin_##name;
   BUILTIN_LIST_C(CALL_BUILTIN_COUNTER)
 #undef CALL_BUILTIN_COUNTER
-#define CALL_BUILTIN_COUNTER(name) \
-  RuntimeCallCounter API_##name = RuntimeCallCounter("API_" #name);
+#define CALL_BUILTIN_COUNTER(name) RuntimeCallCounter API_##name;
   FOR_EACH_API_COUNTER(CALL_BUILTIN_COUNTER)
 #undef CALL_BUILTIN_COUNTER
-#define CALL_BUILTIN_COUNTER(name) \
-  RuntimeCallCounter Handler_##name = RuntimeCallCounter(#name);
+#define CALL_BUILTIN_COUNTER(name) RuntimeCallCounter Handler_##name;
   FOR_EACH_HANDLER_COUNTER(CALL_BUILTIN_COUNTER)
 #undef CALL_BUILTIN_COUNTER
 
@@ -871,11 +858,6 @@ class RuntimeCallStats final : public ZoneObject {
   void Add(RuntimeCallStats* other);
   V8_EXPORT_PRIVATE void Print(std::ostream& os);
   V8_NOINLINE void Dump(v8::tracing::TracedValue* value);
-
-  RuntimeCallStats() {
-    Reset();
-    in_use_ = false;
-  }
 
   RuntimeCallTimer* current_timer() { return current_timer_.Value(); }
   bool InUse() { return in_use_; }
@@ -942,8 +924,10 @@ class RuntimeCallTimerScope {
   HR(incremental_marking_reason, V8.GCIncrementalMarkingReason, 0, 21, 22)    \
   HR(mark_compact_reason, V8.GCMarkCompactReason, 0, 21, 22)                  \
   HR(scavenge_reason, V8.GCScavengeReason, 0, 21, 22)                         \
+  HR(young_generation_handling, V8.GCYoungGenerationHandling, 0, 2, 3)        \
   /* Asm/Wasm. */                                                             \
-  HR(wasm_functions_per_module, V8.WasmFunctionsPerModule, 1, 10000, 51)
+  HR(wasm_functions_per_asm_module, V8.WasmFunctionsPerModule, 1, 10000, 51)  \
+  HR(wasm_functions_per_wasm_module, V8.WasmFunctionsPerModule, 1, 10000, 51)
 
 #define HISTOGRAM_TIMER_LIST(HT)                                               \
   /* Garbage collection timers. */                                             \
@@ -974,15 +958,31 @@ class RuntimeCallTimerScope {
   /* Total JavaScript execution time (including callbacks and runtime calls */ \
   HT(execute, V8.Execute, 1000000, MICROSECOND)                                \
   /* Asm/Wasm */                                                               \
-  HT(wasm_instantiate_module_time, V8.WasmInstantiateModuleMicroSeconds,       \
+  /* TODO(karlschimpf) Update chrome flags to reflect asm/wasm split. */       \
+  HT(wasm_instantiate_asm_module_time, V8.WasmInstantiateModuleMicroSeconds,   \
      1000000, MICROSECOND)                                                     \
-  HT(wasm_decode_module_time, V8.WasmDecodeModuleMicroSeconds, 1000000,        \
+  HT(wasm_instantiate_wasm_module_time, V8.WasmInstantiateModuleMicroSeconds,  \
+     1000000, MICROSECOND)                                                     \
+  /* TODO(karlschimpf) Update chrome flags to reflect asm/wasm split. */       \
+  HT(wasm_decode_asm_module_time, V8.WasmDecodeModuleMicroSeconds, 1000000,    \
      MICROSECOND)                                                              \
-  HT(wasm_decode_function_time, V8.WasmDecodeFunctionMicroSeconds, 1000000,    \
+  HT(wasm_decode_wasm_module_time, V8.WasmDecodeModuleMicroSeconds, 1000000,   \
      MICROSECOND)                                                              \
-  HT(wasm_compile_module_time, V8.WasmCompileModuleMicroSeconds, 1000000,      \
+  /* TODO(karlschimpf) Update chrome flags to reflect asm/wasm split. */       \
+  HT(wasm_decode_asm_function_time, V8.WasmDecodeFunctionMicroSeconds,         \
+     1000000, MICROSECOND)                                                     \
+  HT(wasm_decode_wasm_function_time, V8.WasmDecodeFunctionMicroSeconds,        \
+     1000000, MICROSECOND)                                                     \
+  /* TODO(kschimpf) Update chrome flags to reflect asm/wasm split. */          \
+  HT(wasm_compile_asm_module_time, V8.WasmCompileModuleMicroSeconds, 1000000,  \
+     MICROSECOND)                                                              \
+  HT(wasm_compile_wasm_module_time, V8.WasmCompileModuleMicroSeconds, 1000000, \
      MICROSECOND)                                                              \
   HT(wasm_compile_function_time, V8.WasmCompileFunctionMicroSeconds, 1000000,  \
+     MICROSECOND)                                                              \
+  HT(asm_wasm_translation_time, V8.AsmWasmTranslationMicroSeconds, 1000000,    \
+     MICROSECOND)                                                              \
+  HT(wasm_lazy_compilation_time, V8.WasmLazyCompilationMicroSeconds, 1000000,  \
      MICROSECOND)
 
 #define AGGREGATABLE_HISTOGRAM_TIMER_LIST(AHT) \
@@ -1017,9 +1017,13 @@ class RuntimeCallTimerScope {
   HM(wasm_decode_module_peak_memory_bytes, V8.WasmDecodeModulePeakMemoryBytes) \
   HM(wasm_compile_function_peak_memory_bytes,                                  \
      V8.WasmCompileFunctionPeakMemoryBytes)                                    \
-  HM(wasm_min_mem_pages_count, V8.WasmMinMemPagesCount)                        \
+  /* TODO(karlschimpf) Update chrome flags to reflect asm/wasm split. */       \
+  HM(wasm_asm_min_mem_pages_count, V8.WasmMinMemPagesCount)                    \
+  HM(wasm_wasm_min_mem_pages_count, V8.WasmMinMemPagesCount)                   \
   HM(wasm_max_mem_pages_count, V8.WasmMaxMemPagesCount)                        \
-  HM(wasm_function_size_bytes, V8.WasmFunctionSizeBytes)                       \
+  /* TODO(karlschimpf) Update chrome flags to reflect asm/wasm split. */       \
+  HM(wasm_asm_function_size_bytes, V8.WasmFunctionSizeBytes)                   \
+  HM(wasm_wasm_function_size_bytes, V8.WasmFunctionSizeBytes)                  \
   HM(wasm_module_size_bytes, V8.WasmModuleSizeBytes)
 
 // WARNING: STATS_COUNTER_LIST_* is a very large macro that is causing MSVC
@@ -1146,16 +1150,13 @@ class RuntimeCallTimerScope {
   SC(lo_space_bytes_available, V8.MemoryLoSpaceBytesAvailable)                 \
   SC(lo_space_bytes_committed, V8.MemoryLoSpaceBytesCommitted)                 \
   SC(lo_space_bytes_used, V8.MemoryLoSpaceBytesUsed)                           \
-  SC(turbo_escape_allocs_replaced, V8.TurboEscapeAllocsReplaced)               \
-  SC(crankshaft_escape_allocs_replaced, V8.CrankshaftEscapeAllocsReplaced)     \
-  SC(turbo_escape_loads_replaced, V8.TurboEscapeLoadsReplaced)                 \
-  SC(crankshaft_escape_loads_replaced, V8.CrankshaftEscapeLoadsReplaced)       \
   /* Total code size (including metadata) of baseline code or bytecode. */     \
   SC(total_baseline_code_size, V8.TotalBaselineCodeSize)                       \
   /* Total count of functions compiled using the baseline compiler. */         \
   SC(total_baseline_compile_count, V8.TotalBaselineCompileCount)               \
   SC(wasm_generated_code_size, V8.WasmGeneratedCodeBytes)                      \
-  SC(wasm_reloc_size, V8.WasmRelocBytes)
+  SC(wasm_reloc_size, V8.WasmRelocBytes)                                       \
+  SC(wasm_lazily_compiled_functions, V8.WasmLazilyCompiledFunctions)
 
 // This file contains all the v8 counters that are in use.
 class Counters {

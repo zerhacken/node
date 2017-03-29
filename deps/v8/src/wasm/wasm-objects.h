@@ -5,15 +5,16 @@
 #ifndef V8_WASM_OBJECTS_H_
 #define V8_WASM_OBJECTS_H_
 
+#include "src/debug/debug.h"
 #include "src/debug/interface-types.h"
-#include "src/objects-inl.h"
+#include "src/objects.h"
 #include "src/trap-handler/trap-handler.h"
-#include "src/wasm/managed.h"
 #include "src/wasm/wasm-limits.h"
 
 namespace v8 {
 namespace internal {
 namespace wasm {
+class InterpretedFrame;
 struct WasmModule;
 }
 
@@ -36,10 +37,15 @@ class WasmInstanceWrapper;
   bool has_##name();                           \
   DECLARE_ACCESSORS(name, type)
 
+#define DECLARE_OPTIONAL_GETTER(name, type) \
+  bool has_##name();                        \
+  DECLARE_GETTER(name, type)
+
 // Representation of a WebAssembly.Module JavaScript-level object.
 class WasmModuleObject : public JSObject {
  public:
-  // TODO(titzer): add the brand as an internal field instead of a property.
+  // If a second field is added, we need a kWrapperTracerHeader field as well.
+  // TODO(titzer): add the brand as an embedder field instead of a property.
   enum Fields { kCompiledModule, kFieldCount };
 
   DECLARE_CASTS(WasmModuleObject);
@@ -53,8 +59,15 @@ class WasmModuleObject : public JSObject {
 // Representation of a WebAssembly.Table JavaScript-level object.
 class WasmTableObject : public JSObject {
  public:
-  // TODO(titzer): add the brand as an internal field instead of a property.
-  enum Fields { kFunctions, kMaximum, kDispatchTables, kFieldCount };
+  // The 0-th field is used by the Blink Wrapper Tracer.
+  // TODO(titzer): add the brand as an embedder field instead of a property.
+  enum Fields {
+    kWrapperTracerHeader,
+    kFunctions,
+    kMaximum,
+    kDispatchTables,
+    kFieldCount
+  };
 
   DECLARE_CASTS(WasmTableObject);
   DECLARE_ACCESSORS(functions, FixedArray);
@@ -78,8 +91,15 @@ class WasmTableObject : public JSObject {
 // Representation of a WebAssembly.Memory JavaScript-level object.
 class WasmMemoryObject : public JSObject {
  public:
-  // TODO(titzer): add the brand as an internal field instead of a property.
-  enum Fields : uint8_t { kArrayBuffer, kMaximum, kInstancesLink, kFieldCount };
+  // The 0-th field is used by the Blink Wrapper Tracer.
+  // TODO(titzer): add the brand as an embedder field instead of a property.
+  enum Fields : uint8_t {
+    kWrapperTracerHeader,
+    kArrayBuffer,
+    kMaximum,
+    kInstancesLink,
+    kFieldCount
+  };
 
   DECLARE_CASTS(WasmMemoryObject);
   DECLARE_ACCESSORS(buffer, JSArrayBuffer);
@@ -102,8 +122,10 @@ class WasmMemoryObject : public JSObject {
 // Representation of a WebAssembly.Instance JavaScript-level object.
 class WasmInstanceObject : public JSObject {
  public:
-  // TODO(titzer): add the brand as an internal field instead of a property.
+  // The 0-th field is used by the Blink Wrapper Tracer.
+  // TODO(titzer): add the brand as an embedder field instead of a property.
   enum Fields {
+    kWrapperTracerHeader,
     kCompiledModule,
     kMemoryObject,
     kMemoryArrayBuffer,
@@ -137,7 +159,8 @@ class WasmInstanceObject : public JSObject {
 // Representation of an exported WASM function.
 class WasmExportedFunction : public JSFunction {
  public:
-  enum Fields { kInstance, kIndex, kFieldCount };
+  // The 0-th field is used by the Blink Wrapper Tracer.
+  enum Fields { kWrapperTracerHeader, kInstance, kIndex, kFieldCount };
 
   DECLARE_CASTS(WasmExportedFunction);
 
@@ -153,11 +176,15 @@ class WasmExportedFunction : public JSFunction {
 
 // Information shared by all WasmCompiledModule objects for the same module.
 class WasmSharedModuleData : public FixedArray {
+  // The 0-th field is used by the Blink Wrapper Tracer.
   enum Fields {
+    kWrapperTracerHeader,
     kModuleWrapper,
     kModuleBytes,
     kScript,
     kAsmJsOffsetTable,
+    kBreakPointInfos,
+    kLazyCompilationOrchestrator,
     kFieldCount
   };
 
@@ -168,6 +195,7 @@ class WasmSharedModuleData : public FixedArray {
   DECLARE_OPTIONAL_ACCESSORS(module_bytes, SeqOneByteString);
   DECLARE_GETTER(script, Script);
   DECLARE_OPTIONAL_ACCESSORS(asm_js_offset_table, ByteArray);
+  DECLARE_OPTIONAL_GETTER(breakpoint_infos, FixedArray);
 
   static Handle<WasmSharedModuleData> New(
       Isolate* isolate, Handle<Foreign> module_wrapper,
@@ -177,8 +205,20 @@ class WasmSharedModuleData : public FixedArray {
   // Check whether this module was generated from asm.js source.
   bool is_asm_js();
 
-  // Recreate the ModuleWrapper from the module bytes after deserialization.
-  static void RecreateModuleWrapper(Isolate*, Handle<WasmSharedModuleData>);
+  static void ReinitializeAfterDeserialization(Isolate*,
+                                               Handle<WasmSharedModuleData>);
+
+  static void AddBreakpoint(Handle<WasmSharedModuleData>, int position,
+                            Handle<Object> break_point_object);
+
+  static void SetBreakpointsOnNewInstance(Handle<WasmSharedModuleData>,
+                                          Handle<WasmInstanceObject>);
+
+  static void PrepareForLazyCompilation(Handle<WasmSharedModuleData>);
+
+ private:
+  DECLARE_OPTIONAL_GETTER(lazy_compilation_orchestrator, Foreign);
+  friend class WasmCompiledModule;
 };
 
 class WasmCompiledModule : public FixedArray {
@@ -261,7 +301,7 @@ class WasmCompiledModule : public FixedArray {
 #define DEBUG_ONLY_TABLE(MACRO) MACRO(SMALL_NUMBER, uint32_t, instance_id)
 #else
 #define DEBUG_ONLY_TABLE(IGNORE)
-  uint32_t instance_id() const { return -1; }
+  uint32_t instance_id() const { return static_cast<uint32_t>(-1); }
 #endif
 
 #define WCM_PROPERTY_TABLE(MACRO) \
@@ -311,9 +351,8 @@ class WasmCompiledModule : public FixedArray {
 
   void PrintInstancesChain();
 
-  // Recreate the ModuleWrapper from the module bytes after deserialization.
-  static void RecreateModuleWrapper(Isolate* isolate,
-                                    Handle<WasmCompiledModule> compiled_module);
+  static void ReinitializeAfterDeserialization(Isolate*,
+                                               Handle<WasmCompiledModule>);
 
   // Get the function name of the function identified by the given index.
   // Returns a null handle if the function is unnamed or the name is not a valid
@@ -373,7 +412,33 @@ class WasmCompiledModule : public FixedArray {
   // Get a list of all possible breakpoints within a given range of this module.
   bool GetPossibleBreakpoints(const debug::Location& start,
                               const debug::Location& end,
-                              std::vector<debug::Location>* locations);
+                              std::vector<debug::BreakLocation>* locations);
+
+  // Set a breakpoint on the given byte position inside the given module.
+  // This will affect all live and future instances of the module.
+  // The passed position might be modified to point to the next breakable
+  // location inside the same function.
+  // If it points outside a function, or behind the last breakable location,
+  // this function returns false and does not set any breakpoint.
+  static bool SetBreakPoint(Handle<WasmCompiledModule>, int* position,
+                            Handle<Object> break_point_object);
+
+  // Return an empty handle if no breakpoint is hit at that location, or a
+  // FixedArray with all hit breakpoint objects.
+  MaybeHandle<FixedArray> CheckBreakPoints(int position);
+
+  // Compile lazily the function called in the given caller code object at the
+  // given offset.
+  // If the called function cannot be determined from the caller (indirect
+  // call / exported function), func_index must be set. Otherwise it can be -1.
+  // If patch_caller is set, then all direct calls to functions which were
+  // already lazily compiled are patched (at least the given call site).
+  // Returns the Code to be called at the given call site, or an empty Handle if
+  // an error occured during lazy compilation. In this case, an exception has
+  // been set on the isolate.
+  static MaybeHandle<Code> CompileLazy(Isolate*, Handle<WasmInstanceObject>,
+                                       Handle<Code> caller, int offset,
+                                       int func_index, bool patch_caller);
 
  private:
   void InitId();
@@ -383,7 +448,9 @@ class WasmCompiledModule : public FixedArray {
 
 class WasmDebugInfo : public FixedArray {
  public:
+  // The 0-th field is used by the Blink Wrapper Tracer.
   enum Fields {
+    kWrapperTracerHeader,
     kInstance,
     kInterpreterHandle,
     kInterpretedFunctions,
@@ -395,10 +462,41 @@ class WasmDebugInfo : public FixedArray {
   static bool IsDebugInfo(Object*);
   static WasmDebugInfo* cast(Object*);
 
+  // Set a breakpoint in the given function at the given byte offset within that
+  // function. This will redirect all future calls to this function to the
+  // interpreter and will always pause at the given offset.
   static void SetBreakpoint(Handle<WasmDebugInfo>, int func_index, int offset);
 
-  static void RunInterpreter(Handle<WasmDebugInfo>, int func_index,
-                             uint8_t* arg_buffer);
+  // Make a set of functions always execute in the interpreter without setting
+  // breakpoints.
+  static void RedirectToInterpreter(Handle<WasmDebugInfo>,
+                                    Vector<int> func_indexes);
+
+  void PrepareStep(StepAction);
+
+  // Execute the specified funtion in the interpreter. Read arguments from
+  // arg_buffer.
+  // The frame_pointer will be used to identify the new activation of the
+  // interpreter for unwinding and frame inspection.
+  // Returns true if exited regularly, false if a trap occured. In the latter
+  // case, a pending exception will have been set on the isolate.
+  bool RunInterpreter(Address frame_pointer, int func_index,
+                      uint8_t* arg_buffer);
+
+  // Get the stack of the wasm interpreter as pairs of <function index, byte
+  // offset>. The list is ordered bottom-to-top, i.e. caller before callee.
+  std::vector<std::pair<uint32_t, int>> GetInterpretedStack(
+      Address frame_pointer);
+
+  std::unique_ptr<wasm::InterpretedFrame> GetInterpretedFrame(
+      Address frame_pointer, int idx);
+
+  // Unwind the interpreted stack belonging to the passed interpreter entry
+  // frame.
+  void Unwind(Address frame_pointer);
+
+  // Returns the number of calls / function frames executed in the interpreter.
+  uint64_t NumInterpretedCalls();
 
   DECLARE_GETTER(wasm_instance, WasmInstanceObject);
 };
@@ -424,7 +522,6 @@ class WasmInstanceWrapper : public FixedArray {
   bool has_previous() {
     return IsWasmInstanceWrapper(get(kPreviousInstanceWrapper));
   }
-  void set_instance_object(Handle<JSObject> instance, Isolate* isolate);
   void set_next_wrapper(Object* obj) {
     DCHECK(IsWasmInstanceWrapper(obj));
     set(kNextInstanceWrapper, obj);

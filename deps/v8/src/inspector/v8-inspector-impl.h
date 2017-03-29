@@ -36,7 +36,6 @@
 #include "src/base/macros.h"
 #include "src/inspector/protocol/Protocol.h"
 
-#include "include/v8-debug.h"
 #include "include/v8-inspector.h"
 
 namespace v8_inspector {
@@ -61,19 +60,8 @@ class V8InspectorImpl : public V8Inspector {
   int contextGroupId(v8::Local<v8::Context>);
   int contextGroupId(int contextId);
 
-  v8::MaybeLocal<v8::Value> runCompiledScript(v8::Local<v8::Context>,
-                                              v8::Local<v8::Script>);
-  v8::MaybeLocal<v8::Value> callFunction(v8::Local<v8::Function>,
-                                         v8::Local<v8::Context>,
-                                         v8::Local<v8::Value> receiver,
-                                         int argc, v8::Local<v8::Value> info[]);
   v8::MaybeLocal<v8::Value> compileAndRunInternalScript(v8::Local<v8::Context>,
                                                         v8::Local<v8::String>);
-  v8::MaybeLocal<v8::Value> callInternalFunction(v8::Local<v8::Function>,
-                                                 v8::Local<v8::Context>,
-                                                 v8::Local<v8::Value> receiver,
-                                                 int argc,
-                                                 v8::Local<v8::Value> info[]);
   v8::MaybeLocal<v8::Script> compileScript(v8::Local<v8::Context>,
                                            const String16& code,
                                            const String16& fileName);
@@ -86,8 +74,6 @@ class V8InspectorImpl : public V8Inspector {
   void contextCreated(const V8ContextInfo&) override;
   void contextDestroyed(v8::Local<v8::Context>) override;
   void resetContextGroup(int contextGroupId) override;
-  void willExecuteScript(v8::Local<v8::Context>, int scriptId) override;
-  void didExecuteScript(v8::Local<v8::Context>) override;
   void idleStarted() override;
   void idleFinished() override;
   unsigned exceptionThrown(v8::Local<v8::Context>, const StringView& message,
@@ -127,11 +113,6 @@ class V8InspectorImpl : public V8Inspector {
   V8ProfilerAgentImpl* enabledProfilerAgentForGroup(int contextGroupId);
 
  private:
-  v8::MaybeLocal<v8::Value> callFunction(
-      v8::Local<v8::Function>, v8::Local<v8::Context>,
-      v8::Local<v8::Value> receiver, int argc, v8::Local<v8::Value> info[],
-      v8::MicrotasksScope::Type runMicrotasks);
-
   v8::Isolate* m_isolate;
   V8InspectorClient* m_client;
   std::unique_ptr<V8Debugger> m_debugger;
