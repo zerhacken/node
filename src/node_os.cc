@@ -68,7 +68,7 @@ using v8::Value;
 static void GetHostname(const FunctionCallbackInfo<Value>& args) {
   Environment* env = Environment::GetCurrent(args);
   char buf[MAXHOSTNAMELEN + 1];
-
+  // TODO: (zerhacken) why not use uv_os_gethostname
   if (gethostname(buf, sizeof(buf))) {
 #ifdef __POSIX__
     int errorno = errno;
